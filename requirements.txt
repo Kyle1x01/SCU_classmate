@@ -2,3 +2,4 @@ pandas
 playwright
 customtkinter
 Pillow
+beautifulsoup4
