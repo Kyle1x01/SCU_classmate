@@ -6,9 +6,10 @@ from PIL import Image
 import os
 
 # --- 引入專案模組 ---
-from scraper import SoochowScraper  # 這裡改用真正的爬蟲
+from scraper import SoochowScraper
 from renderer import TimetableRenderer
 from parser import parse_schedule_text
+import config  # 引入設定檔模組
 
 # 設定外觀主題
 ctk.set_appearance_mode("System")
@@ -17,7 +18,9 @@ ctk.set_default_color_theme("blue")
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("東吳課表美化產生器 (M系列優化版)")
+        
+        # --- 1. 設定視窗標題與大小 ---
+        self.title("東吳課表魔法貓貓")
         self.geometry("1100x750")
         self.minsize(900, 650)
 
@@ -26,29 +29,47 @@ class App(ctk.CTk):
         self.attributes('-topmost', True)
         self.after_idle(self.attributes, '-topmost', False)
 
-        # --- [關鍵修復] 建立 Mac 原生選單 (讓 Cmd+C/V 可用) ---
+        # --- 建立 Mac 原生選單 ---
         self._create_global_menu()
 
         # --- 初始化核心模組 ---
-        # headless=True 代表在背景執行，不顯示瀏覽器視窗
-        # 如果你想看它跑，可以改成 headless=False
         self.scraper = SoochowScraper(headless=True)
         self.renderer = TimetableRenderer()
         self.current_image_path = None
-        
         self.default_hint = "#二1:體育... (請在此貼上代碼)"
 
-        # --- 介面佈局 ---
+        # --- [載入圖片] ---
+        try:
+            image_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "cat_logo.png")
+            self.logo_image = ctk.CTkImage(
+                light_image=Image.open(image_path),
+                dark_image=Image.open(image_path),
+                size=(120, 120)
+            )
+        except Exception as e:
+            print(f"提示: 找不到圖片或讀取失敗 ({e})，將略過圖片顯示")
+            self.logo_image = None
+
+        # --- [主介面佈局] ---
+        # 設定主視窗的 grid (左邊 sidebar, 右邊 preview)
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        # 左側 Sidebar
+        # 1. 左側 Sidebar (容器)
         self.sidebar = ctk.CTkFrame(self, width=300, corner_radius=0)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
-        self.sidebar.grid_rowconfigure(0, weight=1)
+        
+        # --- [修正點] Sidebar 內部統一改用 pack() 排版 ---
+        
+        # (1) 貓貓圖片
+        if self.logo_image:
+            self.logo_label = ctk.CTkLabel(self.sidebar, text="", image=self.logo_image)
+            self.logo_label.pack(pady=(30, 10))
 
+        # (2) 分頁選單 (TabView)
         self.tabview = ctk.CTkTabview(self.sidebar, width=280)
-        self.tabview.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+        # 改用 pack，並設定 expand=True 讓它佔據中間剩餘空間
+        self.tabview.pack(padx=10, pady=10, fill="both", expand=True)
         
         self.tab_auto = self.tabview.add("自動抓取")
         self.tab_manual = self.tabview.add("貼上代碼")
@@ -56,13 +77,19 @@ class App(ctk.CTk):
         self._init_auto_tab()
         self._init_manual_tab()
 
-        # 右側 Preview Area
+        # (3) 狀態標籤 (Status Label)
+        self.status_lbl = ctk.CTkLabel(self.sidebar, text="就緒", text_color="gray")
+        # 改用 pack，並固定在底部
+        self.status_lbl.pack(side="bottom", pady=20)
+
+
+        # 2. 右側 Preview Area (保持 Grid 不變，因為它是獨立的容器)
         self.preview_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.preview_frame.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
         self.preview_frame.grid_columnconfigure(0, weight=1)
         self.preview_frame.grid_rowconfigure(0, weight=1)
 
-        # 圖片標籤 (點擊可放大)
+        # 圖片標籤
         self.img_lbl = ctk.CTkLabel(self.preview_frame, text="請在左側選擇模式並產生課表\n(圖片產生後將完整顯示於此)", cursor="arrow")
         self.img_lbl.grid(row=0, column=0, sticky="nsew")
         self.img_lbl.bind("<Button-1>", self.open_zoom_window)
@@ -71,16 +98,12 @@ class App(ctk.CTk):
         self.btn_down = ctk.CTkButton(self.preview_frame, text="下載 JPG", command=self.download, state="disabled")
         self.btn_down.grid(row=1, column=0, sticky="e", pady=(10,0))
 
-        self.status_lbl = ctk.CTkLabel(self.sidebar, text="就緒", text_color="gray")
-        self.status_lbl.grid(row=1, column=0, pady=10)
-
     # ==========================================
-    # [核心修復] 建立 Mac 全域選單
+    # 以下邏輯保持不變
     # ==========================================
     def _create_global_menu(self):
         menubar = tk.Menu(self)
         edit_menu = tk.Menu(menubar, tearoff=0)
-        
         edit_menu.add_command(label="剪下 (Cut)", accelerator="Cmd+X", 
                               command=lambda: self.focus_get().event_generate("<<Cut>>"))
         edit_menu.add_command(label="複製 (Copy)", accelerator="Cmd+C", 
@@ -89,7 +112,6 @@ class App(ctk.CTk):
                               command=lambda: self.focus_get().event_generate("<<Paste>>"))
         edit_menu.add_command(label="全選 (Select All)", accelerator="Cmd+A", 
                               command=lambda: self.focus_get().event_generate("<<SelectAll>>"))
-        
         menubar.add_cascade(label="編輯", menu=edit_menu)
         self.config(menu=menubar)
 
@@ -100,8 +122,24 @@ class App(ctk.CTk):
         self.pass_entry = ctk.CTkEntry(self.tab_auto, placeholder_text="密碼", show="*")
         self.pass_entry.pack(pady=10, padx=10, fill="x")
         
+        # 記住我 勾選框
+        self.remember_var = ctk.BooleanVar(value=False)
+        self.chk_remember = ctk.CTkCheckBox(self.tab_auto, text="記住帳號密碼", variable=self.remember_var)
+        self.chk_remember.pack(pady=5, padx=10, anchor="w")
+        
+        self._load_saved_credentials()
+
         self.btn_run_auto = ctk.CTkButton(self.tab_auto, text="登入並製作", command=self.start_auto_thread)
         self.btn_run_auto.pack(pady=20, padx=10, fill="x")
+
+    def _load_saved_credentials(self):
+        saved_data = config.load_config()
+        if saved_data.get("remember_me", False):
+            self.remember_var.set(True)
+            if "username" in saved_data:
+                self.user_entry.insert(0, saved_data["username"])
+            if "password" in saved_data:
+                self.pass_entry.insert(0, saved_data["password"])
 
     def _init_manual_tab(self):
         title_frame = ctk.CTkFrame(self.tab_manual, fg_color="transparent")
@@ -129,41 +167,35 @@ class App(ctk.CTk):
         except Exception: 
             pass
 
-    # --- 執行緒處理 ---
     def start_auto_thread(self):
         threading.Thread(target=self.process_auto, daemon=True).start()
 
     def start_manual_thread(self):
         threading.Thread(target=self.process_manual, daemon=True).start()
 
-    # --- 核心邏輯: 自動抓取 ---
     def process_auto(self):
         user = self.user_entry.get()
         pwd = self.pass_entry.get()
+        remember = self.remember_var.get()
+
         if not user or not pwd:
             messagebox.showwarning("提示", "請輸入帳號密碼")
             return
         
+        config.save_config(user, pwd, remember)
+        
         self._set_loading(True, "正在連線學校系統...")
         try:
-            # 呼叫 Scraper 進行登入與爬取
-            # 這一步比較久，所以狀態文字會變
             self.status_lbl.configure(text="登入中...請稍候")
-            
-            # 這裡會回傳一個 14x8 的二維陣列
             raw_data = self.scraper.get_timetable_data(user, pwd)
-            
             if not raw_data:
                 raise Exception("抓取失敗或無資料")
-
             self._render_and_show(raw_data)
-            
         except Exception as e:
             self._handle_error(e)
         finally:
             self._set_loading(False)
 
-    # --- 核心邏輯: 手動貼上 ---
     def process_manual(self):
         text_code = self.text_input.get("1.0", "end").strip()
         if not text_code or text_code == self.default_hint:
@@ -175,8 +207,6 @@ class App(ctk.CTk):
     def _run_manual_process(self, text_code):
         try:
             matrix_data = parse_schedule_text(text_code)
-            
-            # 簡單檢查是否有資料
             has_data = False
             for row in matrix_data:
                 for col_idx, cell in enumerate(row):
@@ -189,7 +219,6 @@ class App(ctk.CTk):
                 self.after(0, lambda: messagebox.showerror("解析失敗", "無法識別代碼格式"))
                 self._set_loading(False)
                 return
-                
             self._render_and_show(matrix_data)
         except Exception as e:
             self._handle_error(e)
@@ -207,8 +236,6 @@ class App(ctk.CTk):
 
     def _set_loading(self, is_loading, msg=""):
         state = "disabled" if is_loading else "normal"
-        # 為了避免在非主執行緒操作 GUI 報錯，建議用 after 或是簡單配置
-        # 這裡用 configure 是安全的，因為 customtkinter 有處理，但標準 tk 需小心
         self.btn_run_auto.configure(state=state)
         self.btn_run_manual.configure(state=state)
         self.status_lbl.configure(text=msg, text_color="orange" if is_loading else "gray")
@@ -221,15 +248,12 @@ class App(ctk.CTk):
     def show_image(self, path):
         if not os.path.exists(path): return
         pil_img = Image.open(path)
-        
-        # 預覽縮放邏輯 (保持比例)
         MAX_W, MAX_H = 750, 580
         w_ratio = MAX_W / pil_img.width
         h_ratio = MAX_H / pil_img.height
         scale = min(w_ratio, h_ratio, 1.0)
         new_w = int(pil_img.width * scale)
         new_h = int(pil_img.height * scale)
-        
         ctk_img = ctk.CTkImage(light_image=pil_img, size=(new_w, new_h))
         self.img_lbl.configure(image=ctk_img, text="", cursor="pointinghand")
         self.btn_down.configure(state="normal")
@@ -238,32 +262,22 @@ class App(ctk.CTk):
     def open_zoom_window(self, event=None):
         if not self.current_image_path or not os.path.exists(self.current_image_path):
             return
-
         top = ctk.CTkToplevel(self)
         top.title("課表放大檢視")
         top.geometry("1000x800")
-        
         top.lift()
         top.attributes('-topmost', True)
         top.after_idle(top.attributes, '-topmost', False)
-
         scroll_frame = ctk.CTkScrollableFrame(top, orientation="vertical")
         scroll_frame.pack(fill="both", expand=True)
-
         pil_img = Image.open(self.current_image_path)
-        # 這裡顯示原圖大小
         full_ctk_img = ctk.CTkImage(light_image=pil_img, size=pil_img.size)
-        
         lbl_zoom = ctk.CTkLabel(scroll_frame, text="", image=full_ctk_img)
         lbl_zoom.pack()
 
     def download(self):
         if not self.current_image_path: return
-        path = filedialog.asksaveasfilename(
-            defaultextension=".jpg", 
-            filetypes=[("JPG", "*.jpg")], 
-            initialfile="我的課表.jpg"
-        )
+        path = filedialog.asksaveasfilename(defaultextension=".jpg", filetypes=[("JPG", "*.jpg")], initialfile="我的課表.jpg")
         if path:
             import shutil
             shutil.copy(self.current_image_path, path)
