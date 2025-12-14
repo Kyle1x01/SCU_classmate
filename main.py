@@ -36,6 +36,7 @@ class App(ctk.CTk):
         self.scraper = SoochowScraper(headless=True)
         self.renderer = TimetableRenderer()
         self.current_image_path = None
+        self.current_pil_image = None  # [新增] 用來暫存原始圖片物件，方便縮放
         self.default_hint = "#二1:體育... (請在此貼上代碼)"
 
         # --- [載入圖片] ---
@@ -46,29 +47,28 @@ class App(ctk.CTk):
                 dark_image=Image.open(image_path),
                 size=(120, 120)
             )
+            # 設定 App Icon (macOS)
+            icon_img = tk.PhotoImage(file=image_path)
+            self.iconphoto(True, icon_img)
         except Exception as e:
             print(f"提示: 找不到圖片或讀取失敗 ({e})，將略過圖片顯示")
             self.logo_image = None
 
         # --- [主介面佈局] ---
-        # 設定主視窗的 grid (左邊 sidebar, 右邊 preview)
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        # 1. 左側 Sidebar (容器)
+        # 1. 左側 Sidebar
         self.sidebar = ctk.CTkFrame(self, width=300, corner_radius=0)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
         
-        # --- [修正點] Sidebar 內部統一改用 pack() 排版 ---
-        
-        # (1) 貓貓圖片
+        # Sidebar 內容 (使用 pack)
         if self.logo_image:
             self.logo_label = ctk.CTkLabel(self.sidebar, text="", image=self.logo_image)
             self.logo_label.pack(pady=(30, 10))
 
-        # (2) 分頁選單 (TabView)
+        # 分頁選單
         self.tabview = ctk.CTkTabview(self.sidebar, width=280)
-        # 改用 pack，並設定 expand=True 讓它佔據中間剩餘空間
         self.tabview.pack(padx=10, pady=10, fill="both", expand=True)
         
         self.tab_auto = self.tabview.add("自動抓取")
@@ -77,26 +77,29 @@ class App(ctk.CTk):
         self._init_auto_tab()
         self._init_manual_tab()
 
-        # (3) 狀態標籤 (Status Label)
+        # 狀態標籤
         self.status_lbl = ctk.CTkLabel(self.sidebar, text="就緒", text_color="gray")
-        # 改用 pack，並固定在底部
         self.status_lbl.pack(side="bottom", pady=20)
 
 
-        # 2. 右側 Preview Area (保持 Grid 不變，因為它是獨立的容器)
+        # 2. 右側 Preview Area
         self.preview_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.preview_frame.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
+        # [修改] 這裡把 padx, pady 改小 (原本是 20)，讓空間更大
+        self.preview_frame.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
         self.preview_frame.grid_columnconfigure(0, weight=1)
         self.preview_frame.grid_rowconfigure(0, weight=1)
+
+        # [新增] 綁定視窗大小改變事件，觸發圖片重繪
+        self.preview_frame.bind("<Configure>", self.resize_image_event)
 
         # 圖片標籤
         self.img_lbl = ctk.CTkLabel(self.preview_frame, text="請在左側選擇模式並產生課表\n(圖片產生後將完整顯示於此)", cursor="arrow")
         self.img_lbl.grid(row=0, column=0, sticky="nsew")
         self.img_lbl.bind("<Button-1>", self.open_zoom_window)
 
-        # 下載按鈕
+        # 下載按鈕 (放在右下角)
         self.btn_down = ctk.CTkButton(self.preview_frame, text="下載 JPG", command=self.download, state="disabled")
-        self.btn_down.grid(row=1, column=0, sticky="e", pady=(10,0))
+        self.btn_down.grid(row=1, column=0, sticky="se", pady=10, padx=10) # 改用 sticky="se" 固定在右下角
 
     # ==========================================
     # 以下邏輯保持不變
@@ -122,7 +125,6 @@ class App(ctk.CTk):
         self.pass_entry = ctk.CTkEntry(self.tab_auto, placeholder_text="密碼", show="*")
         self.pass_entry.pack(pady=10, padx=10, fill="x")
         
-        # 記住我 勾選框
         self.remember_var = ctk.BooleanVar(value=False)
         self.chk_remember = ctk.CTkCheckBox(self.tab_auto, text="記住帳號密碼", variable=self.remember_var)
         self.chk_remember.pack(pady=5, padx=10, anchor="w")
@@ -227,12 +229,53 @@ class App(ctk.CTk):
     def _render_and_show(self, data):
         self.status_lbl.configure(text="正在生成高畫質圖片...")
         try:
+            # 1. 產生圖片並存檔
             img_path = self.renderer.render_to_jpg(data)
             self.current_image_path = img_path
-            self.after(0, self.show_image, img_path)
+            
+            # 2. [新增] 將圖片讀入記憶體，設為 current_pil_image 供縮放使用
+            self.current_pil_image = Image.open(img_path)
+            
+            # 3. 呼叫更新顯示
+            self.after(0, lambda: self.resize_image_event(None))
+            
             self.status_lbl.configure(text="完成", text_color="green")
         except Exception as e:
             self._handle_error(e)
+
+    # [新增] 動態縮放圖片的事件處理函式
+    def resize_image_event(self, event):
+        if not self.current_pil_image:
+            return
+
+        # 取得當前 Preview Frame 的寬高
+        frame_width = self.preview_frame.winfo_width()
+        frame_height = self.preview_frame.winfo_height()
+
+        # 扣除一些邊距與下方按鈕的空間
+        # 如果不扣除，圖片可能會稍微超出視窗或蓋住按鈕
+        target_w = frame_width - 10 
+        target_h = frame_height - 60 
+
+        # 避免視窗剛啟動時數值過小導致錯誤
+        if target_w < 50 or target_h < 50:
+            return
+
+        # 計算等比例縮放
+        img_w, img_h = self.current_pil_image.size
+        ratio = min(target_w / img_w, target_h / img_h)
+        
+        new_w = int(img_w * ratio)
+        new_h = int(img_h * ratio)
+
+        # 建立 CustomTkinter 圖片物件
+        ctk_img = ctk.CTkImage(light_image=self.current_pil_image, size=(new_w, new_h))
+        
+        # 更新 Label
+        self.img_lbl.configure(image=ctk_img, text="")
+        
+        # 啟用下載按鈕
+        self.btn_down.configure(state="normal")
 
     def _set_loading(self, is_loading, msg=""):
         state = "disabled" if is_loading else "normal"
@@ -246,34 +289,78 @@ class App(ctk.CTk):
         self.after(0, lambda: messagebox.showerror("錯誤", str(e)))
 
     def show_image(self, path):
+        # 此函式目前主要被 _render_and_show 取代，但保留兼容性
         if not os.path.exists(path): return
-        pil_img = Image.open(path)
-        MAX_W, MAX_H = 750, 580
-        w_ratio = MAX_W / pil_img.width
-        h_ratio = MAX_H / pil_img.height
-        scale = min(w_ratio, h_ratio, 1.0)
-        new_w = int(pil_img.width * scale)
-        new_h = int(pil_img.height * scale)
-        ctk_img = ctk.CTkImage(light_image=pil_img, size=(new_w, new_h))
-        self.img_lbl.configure(image=ctk_img, text="", cursor="pointinghand")
-        self.btn_down.configure(state="normal")
-        self.status_lbl.configure(text="完成！點擊圖片可放大檢視", text_color="green")
+        self.current_image_path = path
+        self.current_pil_image = Image.open(path)
+        self.resize_image_event(None)
 
     def open_zoom_window(self, event=None):
         if not self.current_image_path or not os.path.exists(self.current_image_path):
             return
+
+        # 1. 建立獨立視窗
         top = ctk.CTkToplevel(self)
-        top.title("課表放大檢視")
-        top.geometry("1000x800")
+        top.title("課表詳細檢視")
+        top.geometry("900x800") # 設定一個適合閱讀的高度
+        
+        # 讓視窗置頂一下確保浮現
         top.lift()
         top.attributes('-topmost', True)
         top.after_idle(top.attributes, '-topmost', False)
+
+        # 2. 頂部工具列 (新增功能按鈕)
+        toolbar = ctk.CTkFrame(top, height=40)
+        toolbar.pack(fill="x", padx=10, pady=5)
+
+        # 加入 "用系統預覽程式開啟" 按鈕 (Mac 神器)
+        btn_preview = ctk.CTkButton(
+            toolbar, 
+            text="🔍 用 Mac 預覽程式開啟 (推薦)", 
+            command=self.open_in_system_viewer,
+            fg_color="#4B4B4B", hover_color="#666666", width=200
+        )
+        btn_preview.pack(side="right", padx=5)
+
+        ctk.CTkLabel(toolbar, text="💡 提示：圖片已自動縮放至適合寬度，請上下捲動檢視。").pack(side="left", padx=5)
+
+        # 3. 內容捲動區
         scroll_frame = ctk.CTkScrollableFrame(top, orientation="vertical")
-        scroll_frame.pack(fill="both", expand=True)
+        scroll_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        # 4. 圖片處理 (關鍵優化：符合寬度)
         pil_img = Image.open(self.current_image_path)
-        full_ctk_img = ctk.CTkImage(light_image=pil_img, size=pil_img.size)
-        lbl_zoom = ctk.CTkLabel(scroll_frame, text="", image=full_ctk_img)
-        lbl_zoom.pack()
+        
+        # 設定目標顯示寬度 (扣除捲軸寬度，大約 850px 比較剛好)
+        display_width = 860 
+        
+        # 計算等比例高度
+        w_percent = (display_width / float(pil_img.size[0]))
+        h_size = int((float(pil_img.size[1]) * float(w_percent)))
+        
+        # 縮放圖片 (使用 LANCZOS 演算法保持文字清晰)
+        resized_img = pil_img.resize((display_width, h_size), Image.Resampling.LANCZOS)
+        
+        ctk_img = ctk.CTkImage(light_image=resized_img, size=(display_width, h_size))
+        
+        # 顯示圖片
+        lbl_zoom = ctk.CTkLabel(scroll_frame, text="", image=ctk_img)
+        lbl_zoom.pack(pady=10)
+
+        # 讓滑鼠滾輪在圖片上也能捲動 (優化體驗)
+        # 這裡綁定的是 scroll_frame 的 canvas 捲動事件
+        # 注意：CustomTkinter 的 ScrollableFrame 內部機制較複雜，通常滑鼠放在 scrollbar 區域滾動即可
+
+    def open_in_system_viewer(self):
+        """直接呼叫 macOS 的預覽程式開啟圖片"""
+        if not self.current_image_path: return
+        try:
+            import subprocess
+            # macOS 的 'open' 指令
+            subprocess.run(["open", self.current_image_path])
+        except Exception as e:
+            print(f"開啟預覽失敗: {e}")
+            messagebox.showerror("錯誤", "無法開啟系統預覽程式")
 
     def download(self):
         if not self.current_image_path: return
