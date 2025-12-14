@@ -1,1 +1,0 @@
-# SCU_classmate
