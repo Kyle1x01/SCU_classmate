@@ -5,8 +5,8 @@ from tkinter import messagebox, filedialog
 from PIL import Image
 import os
 
-# 引入專案模組
-from scraper import MockScraper
+# --- 引入專案模組 ---
+from scraper import SoochowScraper  # 這裡改用真正的爬蟲
 from renderer import TimetableRenderer
 from parser import parse_schedule_text
 
@@ -17,7 +17,7 @@ ctk.set_default_color_theme("blue")
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Mac 課表美化產生器 (M系列優化版)")
+        self.title("東吳課表美化產生器 (M系列優化版)")
         self.geometry("1100x750")
         self.minsize(900, 650)
 
@@ -26,12 +26,13 @@ class App(ctk.CTk):
         self.attributes('-topmost', True)
         self.after_idle(self.attributes, '-topmost', False)
 
-        # --- [關鍵修復] 建立 Mac 原生選單 ---
-        # 這行程式碼是解決無法貼上的核心
+        # --- [關鍵修復] 建立 Mac 原生選單 (讓 Cmd+C/V 可用) ---
         self._create_global_menu()
 
         # --- 初始化核心模組 ---
-        self.scraper = MockScraper()
+        # headless=True 代表在背景執行，不顯示瀏覽器視窗
+        # 如果你想看它跑，可以改成 headless=False
+        self.scraper = SoochowScraper(headless=True)
         self.renderer = TimetableRenderer()
         self.current_image_path = None
         
@@ -41,7 +42,7 @@ class App(ctk.CTk):
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        # 左側
+        # 左側 Sidebar
         self.sidebar = ctk.CTkFrame(self, width=300, corner_radius=0)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
         self.sidebar.grid_rowconfigure(0, weight=1)
@@ -55,7 +56,7 @@ class App(ctk.CTk):
         self._init_auto_tab()
         self._init_manual_tab()
 
-        # 右側
+        # 右側 Preview Area
         self.preview_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.preview_frame.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
         self.preview_frame.grid_columnconfigure(0, weight=1)
@@ -77,19 +78,9 @@ class App(ctk.CTk):
     # [核心修復] 建立 Mac 全域選單
     # ==========================================
     def _create_global_menu(self):
-        """
-        建立 macOS 標準 Menu Bar。
-        這是讓 Cmd+C, Cmd+V 在 Tkinter 應用程式中生效的唯一標準解法。
-        """
         menubar = tk.Menu(self)
-        
-        # 建立 "編輯" (Edit) 下拉選單
-        # tearoff=0 代表選單不能被獨立拖出來
         edit_menu = tk.Menu(menubar, tearoff=0)
         
-        # 定義標準操作
-        # command=lambda: self.focus_get().event_generate("<<Paste>>")
-        # 這句話的意思是：對「當前游標所在的輸入框」發送一個「貼上」訊號
         edit_menu.add_command(label="剪下 (Cut)", accelerator="Cmd+X", 
                               command=lambda: self.focus_get().event_generate("<<Cut>>"))
         edit_menu.add_command(label="複製 (Copy)", accelerator="Cmd+C", 
@@ -99,10 +90,7 @@ class App(ctk.CTk):
         edit_menu.add_command(label="全選 (Select All)", accelerator="Cmd+A", 
                               command=lambda: self.focus_get().event_generate("<<SelectAll>>"))
         
-        # 將編輯選單加入主選單列
         menubar.add_cascade(label="編輯", menu=edit_menu)
-        
-        # 告訴視窗使用這個選單
         self.config(menu=menubar)
 
     def _init_auto_tab(self):
@@ -111,64 +99,71 @@ class App(ctk.CTk):
         self.user_entry.pack(pady=10, padx=10, fill="x")
         self.pass_entry = ctk.CTkEntry(self.tab_auto, placeholder_text="密碼", show="*")
         self.pass_entry.pack(pady=10, padx=10, fill="x")
+        
         self.btn_run_auto = ctk.CTkButton(self.tab_auto, text="登入並製作", command=self.start_auto_thread)
         self.btn_run_auto.pack(pady=20, padx=10, fill="x")
 
     def _init_manual_tab(self):
-        # 標題區
         title_frame = ctk.CTkFrame(self.tab_manual, fg_color="transparent")
         title_frame.pack(pady=(20, 5), fill="x", padx=10)
         ctk.CTkLabel(title_frame, text="貼上文字代碼", font=ctk.CTkFont(size=16, weight="bold")).pack(side="left")
         
-        # 即使修復了快捷鍵，保留一個實體貼上按鈕作為備用還是很貼心的
         self.btn_paste = ctk.CTkButton(title_frame, text="📋 貼上", width=60, height=24, 
                                      fg_color="#607D8B", hover_color="#455A64",
                                      command=self.paste_from_clipboard)
         self.btn_paste.pack(side="right")
 
-        # 輸入框
         self.text_input = ctk.CTkTextbox(self.tab_manual, height=300)
         self.text_input.pack(pady=10, padx=10, fill="both", expand=True)
         self.text_input.insert("0.0", self.default_hint)
         
-        # 這裡不需要再手動 bind <Command-v> 了，因為 _create_global_menu 已經處理了
-
         self.btn_run_manual = ctk.CTkButton(self.tab_manual, text="解析並製作", command=self.start_manual_thread, fg_color="#2E8B57", hover_color="#228B22")
         self.btn_run_manual.pack(pady=20, padx=10, fill="x")
 
     def paste_from_clipboard(self):
-        """按鈕專用的貼上功能"""
         try:
             content = self.clipboard_get()
             if content:
-                # 這裡的邏輯是「清空再貼上」，適合這種全量取代的情境
                 self.text_input.delete("0.0", "end")
                 self.text_input.insert("0.0", content)
         except Exception: 
             pass
 
-    # --- 邏輯處理區 ---
+    # --- 執行緒處理 ---
     def start_auto_thread(self):
         threading.Thread(target=self.process_auto, daemon=True).start()
 
     def start_manual_thread(self):
         threading.Thread(target=self.process_manual, daemon=True).start()
 
+    # --- 核心邏輯: 自動抓取 ---
     def process_auto(self):
         user = self.user_entry.get()
         pwd = self.pass_entry.get()
         if not user or not pwd:
             messagebox.showwarning("提示", "請輸入帳號密碼")
             return
-        self._set_loading(True, "爬取中...")
+        
+        self._set_loading(True, "正在連線學校系統...")
         try:
+            # 呼叫 Scraper 進行登入與爬取
+            # 這一步比較久，所以狀態文字會變
+            self.status_lbl.configure(text="登入中...請稍候")
+            
+            # 這裡會回傳一個 14x8 的二維陣列
             raw_data = self.scraper.get_timetable_data(user, pwd)
+            
+            if not raw_data:
+                raise Exception("抓取失敗或無資料")
+
             self._render_and_show(raw_data)
+            
         except Exception as e:
             self._handle_error(e)
         finally:
             self._set_loading(False)
 
+    # --- 核心邏輯: 手動貼上 ---
     def process_manual(self):
         text_code = self.text_input.get("1.0", "end").strip()
         if not text_code or text_code == self.default_hint:
@@ -180,6 +175,8 @@ class App(ctk.CTk):
     def _run_manual_process(self, text_code):
         try:
             matrix_data = parse_schedule_text(text_code)
+            
+            # 簡單檢查是否有資料
             has_data = False
             for row in matrix_data:
                 for col_idx, cell in enumerate(row):
@@ -187,25 +184,31 @@ class App(ctk.CTk):
                         has_data = True
                         break
                 if has_data: break
+            
             if not has_data:
                 self.after(0, lambda: messagebox.showerror("解析失敗", "無法識別代碼格式"))
                 self._set_loading(False)
                 return
+                
             self._render_and_show(matrix_data)
         except Exception as e:
             self._handle_error(e)
             self._set_loading(False)
 
     def _render_and_show(self, data):
-        self.status_lbl.configure(text="正在生成圖片...")
-        img_path = self.renderer.render_to_jpg(data)
-        self.current_image_path = img_path
-        self.after(0, self.show_image, img_path)
-        self.status_lbl.configure(text="完成", text_color="green")
-        self._set_loading(False)
+        self.status_lbl.configure(text="正在生成高畫質圖片...")
+        try:
+            img_path = self.renderer.render_to_jpg(data)
+            self.current_image_path = img_path
+            self.after(0, self.show_image, img_path)
+            self.status_lbl.configure(text="完成", text_color="green")
+        except Exception as e:
+            self._handle_error(e)
 
     def _set_loading(self, is_loading, msg=""):
         state = "disabled" if is_loading else "normal"
+        # 為了避免在非主執行緒操作 GUI 報錯，建議用 after 或是簡單配置
+        # 這裡用 configure 是安全的，因為 customtkinter 有處理，但標準 tk 需小心
         self.btn_run_auto.configure(state=state)
         self.btn_run_manual.configure(state=state)
         self.status_lbl.configure(text=msg, text_color="orange" if is_loading else "gray")
@@ -219,7 +222,7 @@ class App(ctk.CTk):
         if not os.path.exists(path): return
         pil_img = Image.open(path)
         
-        # 預覽縮放邏輯
+        # 預覽縮放邏輯 (保持比例)
         MAX_W, MAX_H = 750, 580
         w_ratio = MAX_W / pil_img.width
         h_ratio = MAX_H / pil_img.height
@@ -232,7 +235,6 @@ class App(ctk.CTk):
         self.btn_down.configure(state="normal")
         self.status_lbl.configure(text="完成！點擊圖片可放大檢視", text_color="green")
 
-    # --- 放大圖片視窗 ---
     def open_zoom_window(self, event=None):
         if not self.current_image_path or not os.path.exists(self.current_image_path):
             return
@@ -249,6 +251,7 @@ class App(ctk.CTk):
         scroll_frame.pack(fill="both", expand=True)
 
         pil_img = Image.open(self.current_image_path)
+        # 這裡顯示原圖大小
         full_ctk_img = ctk.CTkImage(light_image=pil_img, size=pil_img.size)
         
         lbl_zoom = ctk.CTkLabel(scroll_frame, text="", image=full_ctk_img)
@@ -256,7 +259,11 @@ class App(ctk.CTk):
 
     def download(self):
         if not self.current_image_path: return
-        path = filedialog.asksaveasfilename(defaultextension=".jpg", filetypes=[("JPG", "*.jpg")], initialfile="我的課表.jpg")
+        path = filedialog.asksaveasfilename(
+            defaultextension=".jpg", 
+            filetypes=[("JPG", "*.jpg")], 
+            initialfile="我的課表.jpg"
+        )
         if path:
             import shutil
             shutil.copy(self.current_image_path, path)
