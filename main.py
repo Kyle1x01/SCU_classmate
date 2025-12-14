@@ -1,4 +1,4 @@
-import!customtkinter as ctk
+import customtkinter as ctk
 import tkinter as tk  # 必須引入標準 tkinter 來建立 Mac 原生選單
 import threading
 from tkinter import messagebox, filedialog
